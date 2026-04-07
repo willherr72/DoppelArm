@@ -53,7 +53,7 @@ const BROADCAST_ID: u8 = 0xFE;
 impl ServoBus {
     pub fn new(port_name: &str, baud_rate: u32) -> Result<Self, String> {
         let port = serialport::new(port_name, baud_rate)
-            .timeout(Duration::from_millis(20))
+            .timeout(Duration::from_millis(30))
             .data_bits(serialport::DataBits::Eight)
             .parity(serialport::Parity::None)
             .stop_bits(serialport::StopBits::One)
@@ -242,28 +242,33 @@ impl ServoBus {
             .flush()
             .map_err(|e| format!("Flush failed: {}", e))?;
 
-        // Wait for servo to process command and respond.
-        // STS3215 return delay is typically 0.5-1ms.
-        std::thread::sleep(std::time::Duration::from_millis(8));
-
-        // Read all available bytes
+        // Read response bytes. The serial port timeout (20ms) handles waiting
+        // for the servo to respond — no artificial sleep needed.
+        // We do multiple reads because the OS may deliver bytes in chunks.
         let mut buf = vec![0u8; 128];
         let mut total_read = 0;
 
-        // Read with multiple attempts to collect all bytes
-        for _ in 0..3 {
+        for attempt in 0..6 {
             match self.port.read(&mut buf[total_read..]) {
                 Ok(0) => break,
-                Ok(n) => total_read += n,
-                Err(ref e) if e.kind() == std::io::ErrorKind::TimedOut => break,
+                Ok(n) => {
+                    total_read += n;
+                    // Try to parse after each chunk
+                    if let Some(result) = self.try_parse_response(&buf[..total_read], expected_id) {
+                        return result;
+                    }
+                }
+                Err(ref e) if e.kind() == std::io::ErrorKind::TimedOut => {
+                    if total_read > 0 {
+                        break; // Got some bytes but timed out waiting for more
+                    }
+                    if attempt >= 2 {
+                        break; // Give up after 3 timeouts with no data
+                    }
+                    // Otherwise retry — servo might need more time
+                }
                 Err(e) => return Err(format!("Read failed: {}", e)),
             }
-            if total_read >= 6 {
-                if let Some(result) = self.try_parse_response(&buf[..total_read], expected_id) {
-                    return result;
-                }
-            }
-            std::thread::sleep(std::time::Duration::from_millis(3));
         }
 
         // Final attempt to parse everything we collected
@@ -391,9 +396,6 @@ impl ServoBus {
 
     fn flush_input(&mut self) {
         use serialport::ClearBuffer;
-        let _ = self.port.clear(ClearBuffer::Input);
-        // Small delay to let any in-flight bytes arrive before clearing
-        std::thread::sleep(std::time::Duration::from_millis(1));
         let _ = self.port.clear(ClearBuffer::Input);
     }
 }
