@@ -96,15 +96,11 @@ pub fn configure_motor(
 /// Try to find a motor on the bus using common baud rates.
 #[tauri::command]
 pub fn auto_detect_motor(port: String) -> Result<(u8, u32), String> {
-    let baud_rates = [1_000_000, 500_000, 115_200, 38_400];
+    let baud_rates = [1_000_000, 500_000, 250_000, 115_200, 38_400];
 
     for &baud in &baud_rates {
         if let Ok(mut bus) = ServoBus::new(&port, baud) {
-            let found = bus.scan(1..=10);
-            if !found.is_empty() {
-                return Ok((found[0], baud));
-            }
-            // Also try default ID 1
+            // Try pinging ID 1 (factory default)
             if bus.ping(1).is_ok() {
                 return Ok((1, baud));
             }
@@ -112,4 +108,26 @@ pub fn auto_detect_motor(port: String) -> Result<(u8, u32), String> {
     }
 
     Err("No motor found at any common baud rate".to_string())
+}
+
+/// Diagnostic: try pinging ID 1 at each baud rate and report what happens.
+#[tauri::command]
+pub fn diagnose_port(port: String) -> Result<Vec<String>, String> {
+    let baud_rates: Vec<u32> = vec![1_000_000, 500_000, 250_000, 115_200, 38_400];
+    let mut results = Vec::new();
+
+    for baud in baud_rates {
+        let msg = match ServoBus::new(&port, baud) {
+            Ok(mut bus) => {
+                match bus.ping(1) {
+                    Ok(()) => format!("{}: ping OK - motor found at ID 1", baud),
+                    Err(e) => format!("{}: {}", baud, e),
+                }
+            }
+            Err(e) => format!("{}: failed to open - {}", baud, e),
+        };
+        results.push(msg);
+    }
+
+    Ok(results)
 }

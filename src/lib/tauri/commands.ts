@@ -28,6 +28,10 @@ export async function autoDetectMotor(port: string): Promise<[number, number]> {
   return invoke('auto_detect_motor', { port });
 }
 
+export async function diagnosePort(port: string): Promise<string[]> {
+  return invoke('diagnose_port', { port });
+}
+
 // ---- Arm Control ----
 
 export async function readAllJoints(role: 'leader' | 'follower'): Promise<number[]> {

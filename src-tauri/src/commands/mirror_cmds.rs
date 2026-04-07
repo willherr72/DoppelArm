@@ -49,13 +49,23 @@ pub fn start_mirroring(
     let leader = Arc::new(Mutex::new(leader_ctrl));
     let follower = Arc::new(Mutex::new(follower_ctrl));
 
+    // Store Arc refs so we can recover controllers after stopping
+    {
+        let mut ml = state.mirror_leader.lock().map_err(|e| e.to_string())?;
+        *ml = Some(leader.clone());
+    }
+    {
+        let mut mf = state.mirror_follower.lock().map_err(|e| e.to_string())?;
+        *mf = Some(follower.clone());
+    }
+
     let (cancel_tx, cancel_rx) = tokio::sync::oneshot::channel::<()>();
 
     let handle = start_mirror_loop(
-        leader.clone(),
-        follower.clone(),
+        leader,
+        follower,
         calibration_offsets,
-        recording.clone(),
+        recording,
         on_update,
         cancel_rx,
     );
@@ -91,9 +101,36 @@ pub async fn stop_mirroring(state: State<'_, AppState>) -> Result<(), String> {
         let _ = handle.await;
     }
 
-    // Note: controllers live inside Arc<Mutex> in the mirror thread.
-    // After stopping, user needs to reconnect. Can be improved later
-    // by recovering controllers via Arc::try_unwrap.
+    // Recover controllers from the Arc<Mutex> and put them back in AppState
+    let leader_arc = {
+        let mut ml = state.mirror_leader.lock().map_err(|e| e.to_string())?;
+        ml.take()
+    };
+    let follower_arc = {
+        let mut mf = state.mirror_follower.lock().map_err(|e| e.to_string())?;
+        mf.take()
+    };
+
+    if let Some(arc) = leader_arc {
+        match Arc::try_unwrap(arc) {
+            Ok(mutex) => {
+                let controller = mutex.into_inner().map_err(|e| e.to_string())?;
+                let mut l = state.leader.lock().map_err(|e| e.to_string())?;
+                *l = Some(controller);
+            }
+            Err(_) => log::warn!("Could not recover leader controller"),
+        }
+    }
+    if let Some(arc) = follower_arc {
+        match Arc::try_unwrap(arc) {
+            Ok(mutex) => {
+                let controller = mutex.into_inner().map_err(|e| e.to_string())?;
+                let mut f = state.follower.lock().map_err(|e| e.to_string())?;
+                *f = Some(controller);
+            }
+            Err(_) => log::warn!("Could not recover follower controller"),
+        }
+    }
 
     Ok(())
 }

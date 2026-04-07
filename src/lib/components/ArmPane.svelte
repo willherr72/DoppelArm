@@ -1,10 +1,11 @@
 <script lang="ts">
+  import { onDestroy } from 'svelte';
   import SingleArmScene from './scene/SingleArmScene.svelte';
   import JointSliders from './controls/JointSliders.svelte';
   import { availablePorts, leaderConnection, followerConnection } from '$lib/stores/connection';
   import type { ArmConnection } from '$lib/stores/connection';
-  import { leaderAngles, followerAngles } from '$lib/stores/joints';
-  import { listPorts, connectArm, disconnectArm, scanMotors } from '$lib/tauri/commands';
+  import { leaderAngles, followerAngles, leaderJoints, followerJoints, isMirroring } from '$lib/stores/joints';
+  import { listPorts, connectArm, disconnectArm, scanMotors, readAllJoints, diagnosePort } from '$lib/tauri/commands';
   import { showError, showStatus } from '$lib/stores/app';
   import type { Writable } from 'svelte/store';
 
@@ -17,6 +18,44 @@
 
   let selectedPort = '';
   let connecting = false;
+  let pollInterval: ReturnType<typeof setInterval> | null = null;
+
+  // Only poll when motors are confirmed present (motorIds populated)
+  $: {
+    if (connection?.connected && connection.motorIds.length > 0 && !$isMirroring) {
+      startPolling();
+    } else {
+      stopPolling();
+    }
+  }
+
+  let pollBusy = false;
+
+  function startPolling() {
+    if (pollInterval) return;
+    pollInterval = setInterval(async () => {
+      if ($isMirroring || pollBusy) return;
+      pollBusy = true;
+      try {
+        const pos = await readAllJoints(role);
+        const store = role === 'leader' ? leaderJoints : followerJoints;
+        store.update(s => ({ ...s, positions: pos, timestamp: Date.now() }));
+      } catch {
+        // Silently ignore poll errors
+      } finally {
+        pollBusy = false;
+      }
+    }, 250); // 4Hz polling, skips if previous poll still running
+  }
+
+  function stopPolling() {
+    if (pollInterval) {
+      clearInterval(pollInterval);
+      pollInterval = null;
+    }
+  }
+
+  onDestroy(() => stopPolling());
 
   async function connect() {
     if (!selectedPort) return;
@@ -37,12 +76,30 @@
   }
 
   async function disconnect() {
+    stopPolling();
     try {
       await disconnectArm(role);
       connectionStore.set(null);
       showStatus(`${role} arm disconnected`);
     } catch (e) {
       showError(`Disconnect failed: ${e}`);
+    }
+  }
+
+  let diagnosing = false;
+  let diagResults: string[] = [];
+
+  async function diagnose() {
+    const port = connection?.port || selectedPort;
+    if (!port) return;
+    diagnosing = true;
+    diagResults = [];
+    try {
+      diagResults = await diagnosePort(port);
+    } catch (e) {
+      showError(`Diagnose failed: ${e}`);
+    } finally {
+      diagnosing = false;
     }
   }
 </script>
@@ -67,9 +124,20 @@
         <button class="btn-sm primary" on:click={connect} disabled={!selectedPort || connecting}>
           {connecting ? 'Connecting...' : 'Connect'}
         </button>
+        <button class="btn-sm" on:click={diagnose} disabled={!selectedPort || diagnosing}>
+          {diagnosing ? '...' : 'Diagnose'}
+        </button>
       {/if}
     </div>
   </div>
+
+  {#if diagResults.length > 0}
+    <div class="diag-results">
+      {#each diagResults as line}
+        <div class="diag-line" class:ok={line.includes('OK')}>{line}</div>
+      {/each}
+    </div>
+  {/if}
 
   <div class="scene-wrapper">
     <SingleArmScene {angles} {color} />
@@ -127,6 +195,23 @@
   .motor-count {
     color: #666;
     font-size: 11px;
+  }
+
+  .diag-results {
+    padding: 6px 12px;
+    background: #0a0e14;
+    border-bottom: 1px solid #1e2a3a;
+    font-family: monospace;
+    font-size: 10px;
+  }
+
+  .diag-line {
+    color: #667;
+    padding: 1px 0;
+  }
+
+  .diag-line.ok {
+    color: #4ade80;
   }
 
   select {

@@ -28,6 +28,7 @@ pub fn run() {
             disconnect_arm,
             configure_motor,
             auto_detect_motor,
+            diagnose_port,
             // Arm control
             read_all_joints,
             write_all_joints,
