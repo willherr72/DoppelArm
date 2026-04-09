@@ -1,9 +1,21 @@
 use std::path::PathBuf;
-use tauri::State;
+use tauri::{AppHandle, Manager, State};
 
-use crate::arm::config::NUM_JOINTS;
 use crate::calibration::CalibrationData;
 use crate::state::AppState;
+
+/// Resolve the path where calibration data is persisted.
+/// Uses Tauri's app data directory so the file lives outside the project tree
+/// and won't trigger the dev watcher's rebuild loop.
+fn calibration_path(app: &AppHandle) -> Result<PathBuf, String> {
+    let dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|e| format!("Failed to resolve app data dir: {}", e))?;
+    std::fs::create_dir_all(&dir)
+        .map_err(|e| format!("Failed to create app data dir: {}", e))?;
+    Ok(dir.join("calibration.json"))
+}
 
 /// Capture the current position of all joints on the specified arm as a calibration reference.
 #[tauri::command]
@@ -40,7 +52,6 @@ pub fn compute_calibration(state: State<'_, AppState>) -> Result<Vec<i32>, Strin
     let mut cal = state.calibration.lock().map_err(|e| e.to_string())?;
     cal.compute_offsets();
 
-    // Apply offsets to both arms
     let offsets = cal.offsets;
     drop(cal);
 
@@ -53,24 +64,25 @@ pub fn compute_calibration(state: State<'_, AppState>) -> Result<Vec<i32>, Strin
     Ok(offsets.to_vec())
 }
 
-/// Save calibration data to a file.
+/// Save calibration data to the app data directory.
 #[tauri::command]
-pub fn save_calibration(state: State<'_, AppState>, path: String) -> Result<(), String> {
+pub fn save_calibration(app: AppHandle, state: State<'_, AppState>) -> Result<(), String> {
+    let path = calibration_path(&app)?;
     let cal = state.calibration.lock().map_err(|e| e.to_string())?;
-    cal.save(&PathBuf::from(path))
+    cal.save(&path)
 }
 
-/// Load calibration data from a file.
+/// Load calibration data from the app data directory.
 #[tauri::command]
-pub fn load_calibration(state: State<'_, AppState>, path: String) -> Result<Vec<i32>, String> {
-    let loaded = CalibrationData::load(&PathBuf::from(path))?;
+pub fn load_calibration(app: AppHandle, state: State<'_, AppState>) -> Result<Vec<i32>, String> {
+    let path = calibration_path(&app)?;
+    let loaded = CalibrationData::load(&path)?;
     let offsets = loaded.offsets;
 
     let mut cal = state.calibration.lock().map_err(|e| e.to_string())?;
     *cal = loaded;
     drop(cal);
 
-    // Apply offsets to follower
     if let Ok(mut arm) = state.follower.lock() {
         if let Some(ref mut controller) = *arm {
             controller.set_offsets(offsets);

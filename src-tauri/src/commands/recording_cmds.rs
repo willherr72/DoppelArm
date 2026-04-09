@@ -1,4 +1,6 @@
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use tauri::State;
 
 use crate::recording::{ActiveRecording, Recording};
@@ -44,75 +46,59 @@ pub fn start_playback(
     state: State<'_, AppState>,
     recording: Recording,
 ) -> Result<(), String> {
-    // Check if follower is connected
-    let mut follower_guard = state.follower.lock().map_err(|e| e.to_string())?;
-    let follower = follower_guard
-        .as_mut()
-        .ok_or("Follower arm not connected")?;
+    // Take ownership of the follower controller for the playback thread
+    let mut controller = {
+        let mut follower_guard = state.follower.lock().map_err(|e| e.to_string())?;
+        follower_guard.take().ok_or("Follower arm not connected")?
+    };
+    controller.enable_torque()?;
 
-    // Enable torque for playback
-    follower.enable_torque()?;
-
-    // Spawn a playback task
+    let cancel = Arc::new(AtomicBool::new(false));
+    let cancel_clone = cancel.clone();
     let frames = recording.frames.clone();
-    // We need to take the controller for the playback thread
-    let mut controller = follower_guard.take().ok_or("Follower arm not connected")?;
 
-    let (cancel_tx, cancel_rx) = tokio::sync::oneshot::channel::<()>();
-
-    let handle = tokio::task::spawn_blocking(move || {
-        let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-        let cancel_clone = cancel.clone();
-        std::thread::spawn(move || {
-            let _ = cancel_rx.blocking_recv();
-            cancel_clone.store(true, std::sync::atomic::Ordering::SeqCst);
-        });
-
+    let handle = std::thread::spawn(move || {
         for window in frames.windows(2) {
-            if cancel.load(std::sync::atomic::Ordering::SeqCst) {
+            if cancel_clone.load(Ordering::SeqCst) {
                 break;
             }
-
-            let dt = std::time::Duration::from_millis(window[1].t - window[0].t);
+            let dt_ms = window[1].t.saturating_sub(window[0].t);
             let _ = controller.write_positions(&window[0].follower);
-            std::thread::sleep(dt);
+            std::thread::sleep(std::time::Duration::from_millis(dt_ms));
         }
 
-        // Write last frame
         if let Some(last) = frames.last() {
             let _ = controller.write_positions(&last.follower);
         }
-
         let _ = controller.disable_torque();
         log::info!("Playback completed");
     });
 
     {
-        let mut h = state.playback_handle.lock().map_err(|e| e.to_string())?;
+        let mut h = state.playback_thread.lock().map_err(|e| e.to_string())?;
         *h = Some(handle);
     }
     {
-        let mut c = state.playback_cancel.lock().map_err(|e| e.to_string())?;
-        *c = Some(cancel_tx);
+        let mut c = state.playback_cancel_flag.lock().map_err(|e| e.to_string())?;
+        *c = Some(cancel);
     }
-
     Ok(())
 }
 
 #[tauri::command]
-pub async fn stop_playback(state: State<'_, AppState>) -> Result<(), String> {
+pub fn stop_playback(state: State<'_, AppState>) -> Result<(), String> {
     {
-        let mut cancel = state.playback_cancel.lock().map_err(|e| e.to_string())?;
-        if let Some(tx) = cancel.take() {
-            let _ = tx.send(());
+        let mut cancel = state.playback_cancel_flag.lock().map_err(|e| e.to_string())?;
+        if let Some(c) = cancel.take() {
+            c.store(true, Ordering::SeqCst);
         }
     }
     let handle = {
-        let mut h = state.playback_handle.lock().map_err(|e| e.to_string())?;
+        let mut h = state.playback_thread.lock().map_err(|e| e.to_string())?;
         h.take()
     };
     if let Some(handle) = handle {
-        let _ = handle.await;
+        let _ = handle.join();
     }
     Ok(())
 }

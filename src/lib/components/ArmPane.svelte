@@ -2,10 +2,11 @@
   import { onDestroy } from 'svelte';
   import SingleArmScene from './scene/SingleArmScene.svelte';
   import JointSliders from './controls/JointSliders.svelte';
+  import SetupModal from './setup/SetupModal.svelte';
   import { availablePorts, leaderConnection, followerConnection } from '$lib/stores/connection';
   import type { ArmConnection } from '$lib/stores/connection';
   import { leaderAngles, followerAngles, leaderJoints, followerJoints, isMirroring } from '$lib/stores/joints';
-  import { listPorts, connectArm, disconnectArm, scanMotors, readAllJoints, diagnosePort } from '$lib/tauri/commands';
+  import { listPorts, connectArm, disconnectArm, scanMotors, scanConnected, readAllJoints, diagnosePort, resetPositionCorrections } from '$lib/tauri/commands';
   import { showError, showStatus } from '$lib/stores/app';
   import type { Writable } from 'svelte/store';
 
@@ -64,10 +65,13 @@
       await connectArm(selectedPort, role);
       connectionStore.set({ port: selectedPort, baudRate: 1000000, connected: true, motorIds: [] });
       showStatus(`${role} arm connected`);
+      // Scan via the connected bus (port is already open, can't reopen)
       try {
-        const ids = await scanMotors(selectedPort);
+        const ids = await scanConnected(role);
         connectionStore.update(c => c ? { ...c, motorIds: ids } : c);
-      } catch { /* motors may not be configured yet */ }
+      } catch (e) {
+        console.warn('Post-connect scan failed:', e);
+      }
     } catch (e) {
       showError(`Connection failed: ${e}`);
     } finally {
@@ -87,19 +91,85 @@
   }
 
   let diagnosing = false;
-  let diagResults: string[] = [];
+  let scanning = false;
+  let resultLines: string[] = [];
+  let resultTitle = '';
 
   async function diagnose() {
     const port = connection?.port || selectedPort;
     if (!port) return;
     diagnosing = true;
-    diagResults = [];
+    resultLines = [];
+    resultTitle = 'Diagnose';
     try {
-      diagResults = await diagnosePort(port);
+      resultLines = await diagnosePort(port);
     } catch (e) {
       showError(`Diagnose failed: ${e}`);
     } finally {
       diagnosing = false;
+    }
+  }
+
+  let setupOpen = false;
+  let resettingOffsets = false;
+
+  function openSetup() {
+    if (!selectedPort) return;
+    setupOpen = true;
+  }
+
+  async function resetOffsets() {
+    if (!connection?.connected) return;
+    if (!confirm(`Reset all position offsets on ${role}?\n\nThis clears any prior recenter and disables torque first so the servos won't lurch.`)) {
+      return;
+    }
+    resettingOffsets = true;
+    try {
+      await resetPositionCorrections(role);
+      showStatus(`${role} position offsets reset to 0`);
+    } catch (e) {
+      showError(`Reset failed: ${e}`);
+    } finally {
+      resettingOffsets = false;
+    }
+  }
+
+  async function scanBus() {
+    scanning = true;
+    resultLines = [];
+    resultTitle = 'Scan IDs';
+    try {
+      // Use connected bus if already connected, else open fresh port
+      const ids = connection?.connected
+        ? await scanConnected(role)
+        : await scanMotors(selectedPort);
+      if (ids.length === 0) {
+        resultLines = ['No motors found on the bus'];
+      } else {
+        resultLines = [
+          `Found ${ids.length} motor${ids.length === 1 ? '' : 's'}: IDs ${ids.join(', ')}`,
+        ];
+        const expected = [1, 2, 3, 4, 5, 6];
+        const missing = expected.filter((id) => !ids.includes(id));
+        const extra = ids.filter((id) => !expected.includes(id));
+        if (missing.length > 0) {
+          resultLines.push(`Missing IDs (need 1-6): ${missing.join(', ')}`);
+        }
+        if (extra.length > 0) {
+          resultLines.push(`Extra IDs (outside 1-6): ${extra.join(', ')}`);
+        }
+        if (missing.length === 0 && extra.length === 0) {
+          resultLines.push('All 6 motors configured correctly');
+        }
+      }
+      // Update connection store with found IDs so polling starts
+      if (connection?.connected) {
+        connectionStore.update((c) => (c ? { ...c, motorIds: ids } : c));
+      }
+    } catch (e) {
+      showError(`Scan failed: ${e}`);
+    } finally {
+      scanning = false;
     }
   }
 </script>
@@ -111,6 +181,12 @@
       {#if connection?.connected}
         <span class="status connected">{connection.port}</span>
         <span class="motor-count">{connection.motorIds.length} motors</span>
+        <button class="btn-sm" on:click={scanBus} disabled={scanning}>
+          {scanning ? '...' : 'Rescan'}
+        </button>
+        <button class="btn-sm" on:click={resetOffsets} disabled={resettingOffsets}>
+          {resettingOffsets ? '...' : 'Reset offsets'}
+        </button>
         <button class="btn-sm" on:click={disconnect}>Disconnect</button>
       {:else}
         <select bind:value={selectedPort}>
@@ -127,14 +203,36 @@
         <button class="btn-sm" on:click={diagnose} disabled={!selectedPort || diagnosing}>
           {diagnosing ? '...' : 'Diagnose'}
         </button>
+        <button class="btn-sm" on:click={scanBus} disabled={!selectedPort || scanning}>
+          {scanning ? '...' : 'Scan IDs'}
+        </button>
+        <button class="btn-sm" on:click={openSetup} disabled={!selectedPort}>
+          Setup IDs
+        </button>
       {/if}
     </div>
   </div>
 
-  {#if diagResults.length > 0}
+  <SetupModal
+    bind:open={setupOpen}
+    port={selectedPort}
+    armLabel={role === 'leader' ? 'Leader' : 'Follower'}
+  />
+
+  {#if resultLines.length > 0}
     <div class="diag-results">
-      {#each diagResults as line}
-        <div class="diag-line" class:ok={line.includes('OK')}>{line}</div>
+      <div class="diag-title">
+        {resultTitle}
+        <button class="dismiss-btn" on:click={() => (resultLines = [])} aria-label="Dismiss">×</button>
+      </div>
+      {#each resultLines as line}
+        <div
+          class="diag-line"
+          class:ok={line.includes('OK') || line.includes('Found') || line.includes('correctly')}
+          class:warn={line.includes('Missing') || line.includes('Extra') || line.includes('No motors')}
+        >
+          {line}
+        </div>
       {/each}
     </div>
   {/if}
@@ -205,6 +303,34 @@
     font-size: 10px;
   }
 
+  .diag-title {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    color: #8899aa;
+    font-size: 9px;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    font-weight: 700;
+    margin-bottom: 4px;
+    padding-bottom: 3px;
+    border-bottom: 1px solid #1e2a3a;
+  }
+
+  .dismiss-btn {
+    background: none;
+    border: none;
+    color: #556677;
+    font-size: 16px;
+    line-height: 1;
+    cursor: pointer;
+    padding: 0 4px;
+  }
+
+  .dismiss-btn:hover {
+    color: #fff;
+  }
+
   .diag-line {
     color: #667;
     padding: 1px 0;
@@ -212,6 +338,10 @@
 
   .diag-line.ok {
     color: #4ade80;
+  }
+
+  .diag-line.warn {
+    color: #facc15;
   }
 
   select {

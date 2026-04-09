@@ -10,6 +10,13 @@ pub struct ArmController {
     pub joint_ids: [u8; NUM_JOINTS],
     pub offsets: [i32; NUM_JOINTS],
     pub last_positions: [i32; NUM_JOINTS],
+    /// Per-joint position limits for software clamping. Defaults to 0-4095.
+    pub joint_limits: [(i32, i32); NUM_JOINTS],
+    /// Software unwrap state — last raw value seen and accumulated wrap count
+    /// per joint. Used to compute continuous extended positions across the
+    /// 0/4095 boundary.
+    last_raw: [Option<i32>; NUM_JOINTS],
+    wrap_count: [i32; NUM_JOINTS],
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -19,20 +26,24 @@ pub struct JointPositions {
 
 impl ArmController {
     pub fn new(bus: ServoBus, role: ArmRole) -> Self {
+        let joint_ids = ids_for_role(&role);
+        let joint_limits = default_limits_for_role(&role);
         Self {
             bus,
             role,
-            joint_ids: DEFAULT_IDS,
+            joint_ids,
             offsets: [0; NUM_JOINTS],
             last_positions: [POSITION_CENTER; NUM_JOINTS],
+            joint_limits,
+            last_raw: [None; NUM_JOINTS],
+            wrap_count: [0; NUM_JOINTS],
         }
     }
 
-    /// Read current positions of all 6 joints.
-    pub fn read_positions(&mut self) -> Result<[i32; NUM_JOINTS], String> {
+    /// Read raw single-turn positions of all joints (0-4095, no unwrap).
+    pub fn read_raw_positions(&mut self) -> Result<[i32; NUM_JOINTS], String> {
         let ids: Vec<u8> = self.joint_ids.to_vec();
         let positions = self.bus.sync_read_positions(&ids)?;
-
         if positions.len() != NUM_JOINTS {
             return Err(format!(
                 "Expected {} positions, got {}",
@@ -40,13 +51,43 @@ impl ArmController {
                 positions.len()
             ));
         }
-
         let mut result = [0i32; NUM_JOINTS];
         for i in 0..NUM_JOINTS {
             result[i] = positions[i];
         }
-        self.last_positions = result;
         Ok(result)
+    }
+
+    /// Read positions and apply software unwrap. The first read seeds the
+    /// state and returns raw values directly. Subsequent reads detect wraps
+    /// across the 0/4095 boundary and return continuous extended positions.
+    pub fn read_positions(&mut self) -> Result<[i32; NUM_JOINTS], String> {
+        let raw = self.read_raw_positions()?;
+        let mut unwrapped = [0i32; NUM_JOINTS];
+        for i in 0..NUM_JOINTS {
+            if let Some(prev) = self.last_raw[i] {
+                let delta = raw[i] - prev;
+                // If delta is more than half a turn, we wrapped.
+                // delta > 2048: wrapped backward (e.g. went from 5 to 4090)
+                // delta < -2048: wrapped forward (e.g. went from 4090 to 5)
+                if delta > 2048 {
+                    self.wrap_count[i] -= 1;
+                } else if delta < -2048 {
+                    self.wrap_count[i] += 1;
+                }
+            }
+            self.last_raw[i] = Some(raw[i]);
+            unwrapped[i] = raw[i] + self.wrap_count[i] * 4096;
+        }
+        self.last_positions = unwrapped;
+        Ok(unwrapped)
+    }
+
+    /// Reset the software unwrap state. Call after recentering or when the
+    /// servo's reference frame has changed.
+    pub fn reset_unwrap_state(&mut self) {
+        self.last_raw = [None; NUM_JOINTS];
+        self.wrap_count = [0; NUM_JOINTS];
     }
 
     /// Read positions with calibration offsets applied.
@@ -59,29 +100,59 @@ impl ArmController {
         Ok(calibrated)
     }
 
-    /// Write goal positions to all 6 joints, applying limits.
+    /// Clamp a position to this arm's per-joint limits.
+    fn clamp(&self, joint_index: usize, position: i32) -> i32 {
+        let (min, max) = self.joint_limits[joint_index];
+        position.clamp(min, max)
+    }
+
+    /// Convert an extended (possibly-unwrapped) position into the single-turn
+    /// 0-4095 raw value the servo expects in standard position mode.
+    /// Clamps to the valid range so the follower stops cleanly at the boundary
+    /// instead of wrapping around the long way.
+    fn to_raw(extended: i32) -> i32 {
+        extended.clamp(0, 4095)
+    }
+
+    /// Write goal positions to all 6 joints. Accepts extended positions
+    /// (e.g. from leader unwrap) and converts to single-turn raw values.
+    /// Per-arm limits are applied to the EXTENDED value before conversion.
     pub fn write_positions(&mut self, positions: &[i32; NUM_JOINTS]) -> Result<(), String> {
-        let mut clamped = [0i32; NUM_JOINTS];
+        let mut to_send = [0i32; NUM_JOINTS];
         for i in 0..NUM_JOINTS {
-            clamped[i] = clamp_position(i, positions[i]);
+            let clamped = self.clamp(i, positions[i]);
+            to_send[i] = Self::to_raw(clamped);
         }
 
         let ids: Vec<u8> = self.joint_ids.to_vec();
-        let pos_vec: Vec<i32> = clamped.to_vec();
+        let pos_vec: Vec<i32> = to_send.to_vec();
         self.bus.sync_write_positions(&ids, &pos_vec)?;
-        self.last_positions = clamped;
+        // Track the extended (clamped) values, not the wrapped raw
+        let mut clamped_extended = [0i32; NUM_JOINTS];
+        for i in 0..NUM_JOINTS {
+            clamped_extended[i] = self.clamp(i, positions[i]);
+        }
+        self.last_positions = clamped_extended;
         Ok(())
     }
 
-    /// Write a single joint position.
+    /// Write a single joint position. Accepts extended values; converts to raw.
     pub fn write_single_joint(&mut self, joint_index: usize, position: i32) -> Result<(), String> {
         if joint_index >= NUM_JOINTS {
             return Err(format!("Joint index {} out of range", joint_index));
         }
-        let clamped = clamp_position(joint_index, position);
-        self.bus
-            .write_position(self.joint_ids[joint_index], clamped)?;
+        let clamped = self.clamp(joint_index, position);
+        let raw = Self::to_raw(clamped);
+        self.bus.write_position(self.joint_ids[joint_index], raw)?;
         self.last_positions[joint_index] = clamped;
+        Ok(())
+    }
+
+    pub fn set_joint_limit(&mut self, joint_index: usize, min: i32, max: i32) -> Result<(), String> {
+        if joint_index >= NUM_JOINTS {
+            return Err(format!("Joint index {} out of range", joint_index));
+        }
+        self.joint_limits[joint_index] = (min, max);
         Ok(())
     }
 

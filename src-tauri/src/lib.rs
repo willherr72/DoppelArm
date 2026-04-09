@@ -24,6 +24,7 @@ pub fn run() {
             // Serial / connection
             list_ports,
             scan_motors,
+            scan_connected,
             connect_arm,
             disconnect_arm,
             configure_motor,
@@ -35,6 +36,11 @@ pub fn run() {
             write_single_joint,
             set_torque,
             read_servo_status,
+            enable_continuous_rotation,
+            enable_single_turn,
+            set_joint_limit,
+            get_joint_limits,
+            reset_position_corrections,
             // Calibration
             calibrate_capture,
             compute_calibration,

@@ -8,12 +8,12 @@
     startMirroring, stopMirroring,
     startRecording, stopRecording, saveRecording, loadRecording,
     startPlayback, stopPlayback,
-    calibrateCapture, computeCalibration, saveCalibration, loadCalibration,
   } from '$lib/tauri/commands';
   import { leaderJoints, followerJoints } from '$lib/stores/joints';
   import { showError, showStatus } from '$lib/stores/app';
+  import CalibrationModal from './calibration/CalibrationModal.svelte';
 
-  let calibrating = false;
+  let calibrationOpen = false;
   let calibrationDone = false;
 
   async function refreshPorts() {
@@ -69,36 +69,14 @@
     }
   }
 
-  async function runCalibration() {
-    calibrating = true;
-    try {
-      showStatus('Capturing leader...');
-      await calibrateCapture('leader');
-      showStatus('Capturing follower...');
-      await calibrateCapture('follower');
-      const offsets = await computeCalibration();
-      await saveCalibration('calibration.json');
-      calibrationDone = true;
-      showStatus(`Calibrated. Offsets: [${offsets.join(', ')}]`);
-    } catch (e) {
-      showError(`Calibration failed: ${e}`);
-    } finally {
-      calibrating = false;
-    }
-  }
-
-  async function loadCal() {
-    try {
-      await loadCalibration('calibration.json');
-      calibrationDone = true;
-      showStatus('Calibration loaded');
-    } catch (e) {
-      showError(`${e}`);
-    }
+  function openCalibration() {
+    calibrationOpen = true;
   }
 
   refreshPorts();
 </script>
+
+<CalibrationModal bind:open={calibrationOpen} on:saved={() => (calibrationDone = true)} />
 
 <header class="toolbar">
   <div class="left">
@@ -111,13 +89,10 @@
       <button
         class="tool-btn"
         class:active-cal={calibrationDone}
-        on:click={runCalibration}
-        disabled={!$bothConnected || calibrating}
+        on:click={openCalibration}
+        disabled={!$bothConnected}
       >
-        {calibrating ? 'Calibrating...' : calibrationDone ? 'Recalibrate' : 'Calibrate'}
-      </button>
-      <button class="tool-btn" on:click={loadCal} disabled={calibrating}>
-        Load Cal
+        {calibrationDone ? 'Recalibrate' : 'Calibrate'}
       </button>
     </div>
 
@@ -265,11 +240,13 @@
   }
 
   .msg {
-    font-size: 11px;
-    max-width: 250px;
+    font-size: 10px;
+    font-family: monospace;
+    max-width: 700px;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+    user-select: text;
   }
 
   .msg.error { color: #f87171; }

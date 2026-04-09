@@ -3,8 +3,41 @@ use serde::{Deserialize, Serialize};
 pub const NUM_JOINTS: usize = 6;
 pub const DEFAULT_BAUD_RATE: u32 = 1_000_000;
 
-/// Default servo IDs for a single arm.
-pub const DEFAULT_IDS: [u8; NUM_JOINTS] = [1, 2, 3, 4, 5, 6];
+/// Standard joint -> servo ID mapping (kinematic index = servo ID).
+pub const STANDARD_IDS: [u8; NUM_JOINTS] = [1, 2, 3, 4, 5, 6];
+
+/// Leader-arm mapping with wrist_roll and gripper swapped.
+/// The user's leader has the gripper motor at ID 5 and wrist roll motor at ID 6.
+pub const LEADER_IDS: [u8; NUM_JOINTS] = [1, 2, 3, 4, 6, 5];
+
+/// Default servo IDs (kept for backwards compatibility).
+pub const DEFAULT_IDS: [u8; NUM_JOINTS] = STANDARD_IDS;
+
+/// Get the joint -> servo ID mapping for a given arm role.
+pub fn ids_for_role(role: &ArmRole) -> [u8; NUM_JOINTS] {
+    match role {
+        ArmRole::Leader => LEADER_IDS,
+        ArmRole::Follower => STANDARD_IDS,
+    }
+}
+
+/// Default per-joint position limits per arm role.
+/// Leader is unrestricted (gears removed, free movement).
+/// Follower has the gripper clamped to a safe physical range
+/// (3208-4095 raw ≈ 282°-360°, the closed/open envelope).
+pub fn default_limits_for_role(role: &ArmRole) -> [(i32, i32); NUM_JOINTS] {
+    match role {
+        ArmRole::Leader => [(0, 4095); NUM_JOINTS],
+        ArmRole::Follower => [
+            (0, 4095),     // shoulder_pan
+            (0, 4095),     // shoulder_lift
+            (0, 4095),     // elbow_flex
+            (0, 4095),     // wrist_flex
+            (0, 4095),     // wrist_roll
+            (3208, 4095),  // gripper: ~282° (closed) to 360° (open)
+        ],
+    }
+}
 
 /// Joint names in order.
 pub const JOINT_NAMES: [&str; NUM_JOINTS] = [
@@ -22,14 +55,15 @@ pub const POSITION_MAX: i32 = 4095;
 pub const POSITION_CENTER: i32 = 2048;
 
 /// Per-joint position limits (raw servo units).
-/// These are conservative defaults; can be adjusted per-arm after calibration.
+/// We use the full 0-4095 range and let the hardware enforce its own
+/// mechanical limits. Software clamping was masking valid leader motions.
 pub const JOINT_LIMITS: [(i32, i32); NUM_JOINTS] = [
-    (0, 4095),     // shoulder_pan: full rotation
-    (512, 3584),   // shoulder_lift: ~270 degrees
-    (512, 3584),   // elbow_flex: ~270 degrees
-    (512, 3584),   // wrist_flex: ~270 degrees
-    (0, 4095),     // wrist_roll: full rotation
-    (1400, 2700),  // gripper: open to closed
+    (0, 4095),  // shoulder_pan
+    (0, 4095),  // shoulder_lift
+    (0, 4095),  // elbow_flex
+    (0, 4095),  // wrist_flex
+    (0, 4095),  // wrist_roll
+    (0, 4095),  // gripper
 ];
 
 /// Link lengths in millimeters for FK/visualization.

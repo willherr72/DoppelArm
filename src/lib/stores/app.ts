@@ -7,8 +7,9 @@ export const error = writable<string | null>(null);
 export const statusMessage = writable<string>('');
 
 export function showError(msg: string) {
+  console.error('[DoppelArm]', msg);
   error.set(msg);
-  setTimeout(() => error.set(null), 5000);
+  setTimeout(() => error.set(null), 15000);
 }
 
 export function showStatus(msg: string) {

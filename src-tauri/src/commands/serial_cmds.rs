@@ -12,10 +12,34 @@ pub fn list_ports() -> Vec<PortInfo> {
 }
 
 #[tauri::command]
-pub fn scan_motors(port: String, baud_rate: Option<u32>) -> Result<Vec<u8>, String> {
-    let baud = baud_rate.unwrap_or(DEFAULT_BAUD_RATE);
-    let mut bus = ServoBus::new(&port, baud)?;
-    Ok(bus.scan(1..=20))
+pub async fn scan_motors(port: String, baud_rate: Option<u32>) -> Result<Vec<u8>, String> {
+    tokio::task::spawn_blocking(move || {
+        let baud = baud_rate.unwrap_or(DEFAULT_BAUD_RATE);
+        let mut bus = ServoBus::new(&port, baud)?;
+        // Scan only IDs 1-10 (more than enough for 6-motor arms)
+        Ok(bus.scan(1..=10))
+    })
+    .await
+    .map_err(|e| format!("scan task failed: {}", e))?
+}
+
+/// Scan for motor IDs using the already-connected bus of the given arm.
+/// Use this when the arm is connected, since opening the port again would fail.
+#[tauri::command]
+pub fn scan_connected(state: State<'_, AppState>, role: String) -> Result<Vec<u8>, String> {
+    match role.as_str() {
+        "leader" => {
+            let mut arm = state.leader.lock().map_err(|e| e.to_string())?;
+            let controller = arm.as_mut().ok_or("Leader arm not connected")?;
+            Ok(controller.bus.scan(1..=10))
+        }
+        "follower" => {
+            let mut arm = state.follower.lock().map_err(|e| e.to_string())?;
+            let controller = arm.as_mut().ok_or("Follower arm not connected")?;
+            Ok(controller.bus.scan(1..=10))
+        }
+        _ => Err(format!("Unknown role: {}", role)),
+    }
 }
 
 #[tauri::command]
@@ -110,24 +134,37 @@ pub fn auto_detect_motor(port: String) -> Result<(u8, u32), String> {
     Err("No motor found at any common baud rate".to_string())
 }
 
-/// Diagnostic: try pinging ID 1 at each baud rate and report what happens.
+/// Diagnostic: scan IDs 1-10 at each common baud rate and report findings.
 #[tauri::command]
-pub fn diagnose_port(port: String) -> Result<Vec<String>, String> {
-    let baud_rates: Vec<u32> = vec![1_000_000, 500_000, 250_000, 115_200, 38_400];
-    let mut results = Vec::new();
+pub async fn diagnose_port(port: String) -> Result<Vec<String>, String> {
+    tokio::task::spawn_blocking(move || {
+        let baud_rates: Vec<u32> = vec![1_000_000, 500_000, 250_000, 115_200, 38_400];
+        let mut results = Vec::new();
 
-    for baud in baud_rates {
-        let msg = match ServoBus::new(&port, baud) {
-            Ok(mut bus) => {
-                match bus.ping(1) {
-                    Ok(()) => format!("{}: ping OK - motor found at ID 1", baud),
-                    Err(e) => format!("{}: {}", baud, e),
+        for baud in baud_rates {
+            let msg = match ServoBus::new(&port, baud) {
+                Ok(mut bus) => {
+                    let found = bus.scan(1..=10);
+                    if found.is_empty() {
+                        format!("{}: no motors found", baud)
+                    } else {
+                        format!("{}: OK - found IDs {}", baud, format_id_list(&found))
+                    }
                 }
-            }
-            Err(e) => format!("{}: failed to open - {}", baud, e),
-        };
-        results.push(msg);
-    }
+                Err(e) => format!("{}: failed to open - {}", baud, e),
+            };
+            results.push(msg);
+        }
 
-    Ok(results)
+        Ok::<_, String>(results)
+    })
+    .await
+    .map_err(|e| format!("diagnose task failed: {}", e))?
+}
+
+fn format_id_list(ids: &[u8]) -> String {
+    ids.iter()
+        .map(|i| i.to_string())
+        .collect::<Vec<_>>()
+        .join(", ")
 }

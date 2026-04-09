@@ -12,6 +12,10 @@ export async function scanMotors(port: string, baudRate?: number): Promise<numbe
   return invoke('scan_motors', { port, baudRate });
 }
 
+export async function scanConnected(role: 'leader' | 'follower'): Promise<number[]> {
+  return invoke('scan_connected', { role });
+}
+
 export async function connectArm(port: string, role: 'leader' | 'follower', baudRate?: number): Promise<void> {
   return invoke('connect_arm', { port, role, baudRate });
 }
@@ -63,6 +67,31 @@ export async function readServoStatus(role: 'leader' | 'follower', servoId: numb
   return invoke('read_servo_status', { role, servoId });
 }
 
+export async function enableContinuousRotation(role: 'leader' | 'follower', servoId: number): Promise<void> {
+  return invoke('enable_continuous_rotation', { role, servoId });
+}
+
+export async function enableSingleTurn(role: 'leader' | 'follower', servoId: number): Promise<void> {
+  return invoke('enable_single_turn', { role, servoId });
+}
+
+export async function setJointLimit(
+  role: 'leader' | 'follower',
+  jointIndex: number,
+  min: number,
+  max: number
+): Promise<void> {
+  return invoke('set_joint_limit', { role, jointIndex, min, max });
+}
+
+export async function getJointLimits(role: 'leader' | 'follower'): Promise<[number, number][]> {
+  return invoke('get_joint_limits', { role });
+}
+
+export async function resetPositionCorrections(role: 'leader' | 'follower'): Promise<void> {
+  return invoke('reset_position_corrections', { role });
+}
+
 // ---- Calibration ----
 
 export async function calibrateCapture(role: 'leader' | 'follower'): Promise<number[]> {
@@ -73,12 +102,12 @@ export async function computeCalibration(): Promise<number[]> {
   return invoke('compute_calibration');
 }
 
-export async function saveCalibration(path: string): Promise<void> {
-  return invoke('save_calibration', { path });
+export async function saveCalibration(): Promise<void> {
+  return invoke('save_calibration');
 }
 
-export async function loadCalibration(path: string): Promise<number[]> {
-  return invoke('load_calibration', { path });
+export async function loadCalibration(): Promise<number[]> {
+  return invoke('load_calibration');
 }
 
 export async function getCalibration(): Promise<number[]> {
