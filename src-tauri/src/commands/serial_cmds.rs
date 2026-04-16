@@ -66,7 +66,14 @@ pub fn connect_arm(
             *leader = Some(controller);
         }
         ArmRole::Follower => {
+            let offsets = {
+                let cal = state.calibration.lock().map_err(|e| e.to_string())?;
+                cal.offsets
+            };
+
             let mut follower = state.follower.lock().map_err(|e| e.to_string())?;
+            let mut controller = controller;
+            controller.set_offsets(offsets);
             *follower = Some(controller);
         }
     }

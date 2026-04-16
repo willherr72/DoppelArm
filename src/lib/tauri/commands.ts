@@ -94,6 +94,15 @@ export async function resetPositionCorrections(role: 'leader' | 'follower'): Pro
 
 // ---- Calibration ----
 
+export interface CalibrationState {
+  offsets: number[];
+  mirror_signs: number[];
+  leader_reference: number[];
+  follower_reference: number[];
+  leader_port: string;
+  follower_port: string;
+}
+
 export async function calibrateCapture(role: 'leader' | 'follower'): Promise<number[]> {
   return invoke('calibrate_capture', { role });
 }
@@ -110,8 +119,28 @@ export async function loadCalibration(): Promise<number[]> {
   return invoke('load_calibration');
 }
 
+export async function hasSavedCalibration(): Promise<boolean> {
+  return invoke('has_saved_calibration');
+}
+
+export async function getCalibrationState(): Promise<CalibrationState> {
+  return invoke('get_calibration_state');
+}
+
+export async function setCalibrationState(calibration: CalibrationState): Promise<void> {
+  return invoke('set_calibration_state', { calibration });
+}
+
 export async function getCalibration(): Promise<number[]> {
   return invoke('get_calibration');
+}
+
+export async function getMirrorSigns(): Promise<number[]> {
+  return invoke('get_mirror_signs');
+}
+
+export async function setMirrorSign(jointIndex: number, sign: 1 | -1): Promise<number[]> {
+  return invoke('set_mirror_sign', { jointIndex, sign });
 }
 
 // ---- Mirroring ----

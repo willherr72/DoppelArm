@@ -38,9 +38,7 @@
 
   async function save() {
     try {
-      // Use a default path in the app directory
-      const path = 'calibration.json';
-      await saveCalibration(path);
+      await saveCalibration();
       showStatus('Calibration saved');
     } catch (e) {
       showError(`Save failed: ${e}`);
@@ -49,8 +47,7 @@
 
   async function load() {
     try {
-      const path = 'calibration.json';
-      offsets = await loadCalibration(path);
+      offsets = await loadCalibration();
       step = 'done';
       showStatus('Calibration loaded');
     } catch (e) {
