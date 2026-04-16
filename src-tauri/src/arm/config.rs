@@ -49,6 +49,10 @@ pub const JOINT_NAMES: [&str; NUM_JOINTS] = [
     "gripper",
 ];
 
+/// Joints that can validly cross the 0/4095 boundary and therefore need
+/// wrap-aware calibration and target selection.
+pub const WRAPPED_MIRROR_JOINTS: [usize; 2] = [3, 4];
+
 /// Position range for STS3215: 0-4095 maps to 0-360 degrees.
 pub const POSITION_MIN: i32 = 0;
 pub const POSITION_MAX: i32 = 4095;

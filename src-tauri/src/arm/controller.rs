@@ -12,6 +12,7 @@ pub struct ArmController {
     pub last_positions: [i32; NUM_JOINTS],
     /// Per-joint position limits for software clamping. Defaults to 0-4095.
     pub joint_limits: [(i32, i32); NUM_JOINTS],
+    joint_wraps: [bool; NUM_JOINTS],
     /// Software unwrap state — last raw value seen and accumulated wrap count
     /// per joint. Used to compute continuous extended positions across the
     /// 0/4095 boundary.
@@ -27,7 +28,14 @@ pub struct JointPositions {
 impl ArmController {
     pub fn new(bus: ServoBus, role: ArmRole) -> Self {
         let joint_ids = ids_for_role(&role);
-        let joint_limits = default_limits_for_role(&role);
+        let mut joint_limits = default_limits_for_role(&role);
+        let mut joint_wraps = [false; NUM_JOINTS];
+        if matches!(role, ArmRole::Follower) {
+            joint_limits[5] = (2958, 4095);
+            for joint_index in WRAPPED_MIRROR_JOINTS {
+                joint_wraps[joint_index] = true;
+            }
+        }
         Self {
             bus,
             role,
@@ -35,6 +43,7 @@ impl ArmController {
             offsets: [0; NUM_JOINTS],
             last_positions: [POSITION_CENTER; NUM_JOINTS],
             joint_limits,
+            joint_wraps,
             last_raw: [None; NUM_JOINTS],
             wrap_count: [0; NUM_JOINTS],
         }
@@ -106,12 +115,22 @@ impl ArmController {
         position.clamp(min, max)
     }
 
-    /// Convert an extended (possibly-unwrapped) position into the single-turn
-    /// 0-4095 raw value the servo expects in standard position mode.
-    /// Clamps to the valid range so the follower stops cleanly at the boundary
-    /// instead of wrapping around the long way.
-    fn to_raw(extended: i32) -> i32 {
-        extended.clamp(0, 4095)
+    fn nearest_wrapped_target(&self, joint_index: usize, position: i32) -> i32 {
+        let wrapped = position.rem_euclid(4096);
+        let last = self.last_positions[joint_index];
+        let turns = (last - wrapped) as f64 / 4096.0;
+        wrapped + (turns.round() as i32) * 4096
+    }
+
+    fn normalize_target(&self, joint_index: usize, extended: i32) -> (i32, i32) {
+        if self.joint_wraps[joint_index] {
+            let nearest = self.nearest_wrapped_target(joint_index, extended);
+            let wrapped = nearest.rem_euclid(4096);
+            (nearest, wrapped)
+        } else {
+            let clamped = self.clamp(joint_index, extended);
+            (clamped, clamped.clamp(0, 4095))
+        }
     }
 
     /// Write goal positions to all 6 joints. Accepts extended positions
@@ -119,20 +138,17 @@ impl ArmController {
     /// Per-arm limits are applied to the EXTENDED value before conversion.
     pub fn write_positions(&mut self, positions: &[i32; NUM_JOINTS]) -> Result<(), String> {
         let mut to_send = [0i32; NUM_JOINTS];
+        let mut normalized = [0i32; NUM_JOINTS];
         for i in 0..NUM_JOINTS {
-            let clamped = self.clamp(i, positions[i]);
-            to_send[i] = Self::to_raw(clamped);
+            let (extended, raw) = self.normalize_target(i, positions[i]);
+            normalized[i] = extended;
+            to_send[i] = raw;
         }
 
         let ids: Vec<u8> = self.joint_ids.to_vec();
         let pos_vec: Vec<i32> = to_send.to_vec();
         self.bus.sync_write_positions(&ids, &pos_vec)?;
-        // Track the extended (clamped) values, not the wrapped raw
-        let mut clamped_extended = [0i32; NUM_JOINTS];
-        for i in 0..NUM_JOINTS {
-            clamped_extended[i] = self.clamp(i, positions[i]);
-        }
-        self.last_positions = clamped_extended;
+        self.last_positions = normalized;
         Ok(())
     }
 
@@ -141,10 +157,9 @@ impl ArmController {
         if joint_index >= NUM_JOINTS {
             return Err(format!("Joint index {} out of range", joint_index));
         }
-        let clamped = self.clamp(joint_index, position);
-        let raw = Self::to_raw(clamped);
+        let (extended, raw) = self.normalize_target(joint_index, position);
         self.bus.write_position(self.joint_ids[joint_index], raw)?;
-        self.last_positions[joint_index] = clamped;
+        self.last_positions[joint_index] = extended;
         Ok(())
     }
 

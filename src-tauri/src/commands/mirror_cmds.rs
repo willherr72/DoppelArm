@@ -40,6 +40,14 @@ pub fn start_mirroring(
         let cal = state.calibration.lock().map_err(|e| e.to_string())?;
         cal.offsets
     };
+    let (mirror_signs, leader_reference, follower_reference) = {
+        let cal = state.calibration.lock().map_err(|e| e.to_string())?;
+        (
+            cal.mirror_signs,
+            cal.leader_reference,
+            cal.follower_reference,
+        )
+    };
 
     let recording = {
         let mut rec = state.recording.lock().map_err(|e| e.to_string())?;
@@ -68,6 +76,9 @@ pub fn start_mirroring(
         leader,
         follower,
         calibration_offsets,
+        mirror_signs,
+        leader_reference,
+        follower_reference,
         recording,
         on_update,
         cancel,

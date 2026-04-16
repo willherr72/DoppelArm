@@ -7,7 +7,7 @@ use crate::state::AppState;
 /// Resolve the path where calibration data is persisted.
 /// Uses Tauri's app data directory so the file lives outside the project tree
 /// and won't trigger the dev watcher's rebuild loop.
-fn calibration_path(app: &AppHandle) -> Result<PathBuf, String> {
+pub(crate) fn calibration_path(app: &AppHandle) -> Result<PathBuf, String> {
     let dir = app
         .path()
         .app_data_dir()
@@ -92,9 +92,78 @@ pub fn load_calibration(app: AppHandle, state: State<'_, AppState>) -> Result<Ve
     Ok(offsets.to_vec())
 }
 
+#[tauri::command]
+pub fn has_saved_calibration(app: AppHandle) -> Result<bool, String> {
+    let path = calibration_path(&app)?;
+    Ok(path.exists())
+}
+
+#[tauri::command]
+pub fn get_calibration_state(state: State<'_, AppState>) -> Result<CalibrationData, String> {
+    let cal = state.calibration.lock().map_err(|e| e.to_string())?;
+    Ok(cal.clone())
+}
+
+#[tauri::command]
+pub fn set_calibration_state(
+    state: State<'_, AppState>,
+    calibration: CalibrationData,
+) -> Result<(), String> {
+    let offsets = calibration.offsets;
+
+    let mut cal = state.calibration.lock().map_err(|e| e.to_string())?;
+    *cal = calibration;
+    drop(cal);
+
+    if let Ok(mut arm) = state.follower.lock() {
+        if let Some(ref mut controller) = *arm {
+            controller.set_offsets(offsets);
+        }
+    }
+
+    Ok(())
+}
+
 /// Get current calibration offsets.
 #[tauri::command]
 pub fn get_calibration(state: State<'_, AppState>) -> Result<Vec<i32>, String> {
     let cal = state.calibration.lock().map_err(|e| e.to_string())?;
     Ok(cal.offsets.to_vec())
+}
+
+/// Get current per-joint mirror direction signs.
+#[tauri::command]
+pub fn get_mirror_signs(state: State<'_, AppState>) -> Result<Vec<i32>, String> {
+    let cal = state.calibration.lock().map_err(|e| e.to_string())?;
+    Ok(cal.mirror_signs.to_vec())
+}
+
+/// Set one joint's mirror direction sign to either 1 or -1.
+#[tauri::command]
+pub fn set_mirror_sign(
+    state: State<'_, AppState>,
+    joint_index: usize,
+    sign: i32,
+) -> Result<Vec<i32>, String> {
+    if joint_index >= crate::arm::config::NUM_JOINTS {
+        return Err(format!("Joint index {} out of range", joint_index));
+    }
+    if sign != 1 && sign != -1 {
+        return Err(format!("Invalid sign {}. Expected 1 or -1", sign));
+    }
+
+    let mut cal = state.calibration.lock().map_err(|e| e.to_string())?;
+    cal.mirror_signs[joint_index] = sign;
+    cal.compute_offsets();
+    let mirror_signs = cal.mirror_signs;
+    let offsets = cal.offsets;
+    drop(cal);
+
+    if let Ok(mut arm) = state.follower.lock() {
+        if let Some(ref mut controller) = *arm {
+            controller.set_offsets(offsets);
+        }
+    }
+
+    Ok(mirror_signs.to_vec())
 }
