@@ -88,10 +88,6 @@ export async function getJointLimits(role: 'leader' | 'follower'): Promise<[numb
   return invoke('get_joint_limits', { role });
 }
 
-export async function resetPositionCorrections(role: 'leader' | 'follower'): Promise<void> {
-  return invoke('reset_position_corrections', { role });
-}
-
 // ---- Calibration ----
 
 export interface CalibrationState {

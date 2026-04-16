@@ -18,7 +18,9 @@ pub struct AppState {
     pub mirror_follower: Mutex<Option<Arc<Mutex<ArmController>>>>,
     pub playback_thread: Mutex<Option<JoinHandle<()>>>,
     pub playback_cancel_flag: Mutex<Option<Arc<AtomicBool>>>,
-    pub recording: Mutex<Option<ActiveRecording>>,
+    /// Shared recording slot. Held as Arc so the mirror thread can append
+    /// frames into the same slot the recording_cmds read/write.
+    pub recording: Arc<Mutex<Option<ActiveRecording>>>,
     pub calibration: Mutex<CalibrationData>,
 }
 
@@ -33,7 +35,7 @@ impl AppState {
             mirror_follower: Mutex::new(None),
             playback_thread: Mutex::new(None),
             playback_cancel_flag: Mutex::new(None),
-            recording: Mutex::new(None),
+            recording: Arc::new(Mutex::new(None)),
             calibration: Mutex::new(CalibrationData::default()),
         }
     }

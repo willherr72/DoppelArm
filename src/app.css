@@ -5,10 +5,9 @@
 }
 
 html, body {
-  min-height: 100%;
+  height: 100%;
   width: 100%;
-  overflow-x: hidden;
-  overflow-y: auto;
+  overflow: hidden;
   font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, sans-serif;
   background: #0b1019;
   color: #c0c8d8;

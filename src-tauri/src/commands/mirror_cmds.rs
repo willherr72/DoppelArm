@@ -18,6 +18,13 @@ pub fn start_mirroring(
             return Err("Already mirroring".to_string());
         }
     }
+    // Refuse if playback owns the follower
+    {
+        let pb = state.playback_thread.lock().map_err(|e| e.to_string())?;
+        if pb.is_some() {
+            return Err("Playback in progress — stop playback first".to_string());
+        }
+    }
 
     // Take ownership of both arm controllers for the mirror thread.
     let leader_ctrl = {
@@ -49,10 +56,9 @@ pub fn start_mirroring(
         )
     };
 
-    let recording = {
-        let mut rec = state.recording.lock().map_err(|e| e.to_string())?;
-        Arc::new(Mutex::new(rec.take()))
-    };
+    // Share the same recording slot the recording commands read/write so
+    // frames started during a mirror session land where stop_recording sees them.
+    let recording = state.recording.clone();
 
     let leader = Arc::new(Mutex::new(leader_ctrl));
     let follower = Arc::new(Mutex::new(follower_ctrl));

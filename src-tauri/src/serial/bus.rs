@@ -27,8 +27,6 @@ const REG_ID: u8 = 5;
 const REG_BAUD_RATE: u8 = 6;
 const REG_MIN_ANGLE_LIMIT: u8 = 9;
 const REG_MAX_ANGLE_LIMIT: u8 = 11;
-/// 16-bit signed position offset. Reported position = encoder + this value.
-const REG_POSITION_CORRECTION: u8 = 31;
 const REG_TORQUE_ENABLE: u8 = 40;
 const REG_GOAL_POSITION: u8 = 42;
 const REG_GOAL_SPEED: u8 = 46;
@@ -309,36 +307,6 @@ impl ServoBus {
     /// Restore the default single-turn 0-4095 position range for a servo.
     pub fn enable_single_turn(&mut self, id: u8) -> Result<(), String> {
         self.set_angle_limits(id, 0, 4095)
-    }
-
-    /// Read the current position correction (signed 16-bit offset).
-    pub fn read_position_correction(&mut self, id: u8) -> Result<i32, String> {
-        let data = self.read_register(id, REG_POSITION_CORRECTION, 2)?;
-        Ok(i16::from_le_bytes([data[0], data[1]]) as i32)
-    }
-
-    /// Write the position correction register. The reported position becomes
-    /// (raw_encoder + correction) mod 4096.
-    pub fn write_position_correction(&mut self, id: u8, correction: i32) -> Result<(), String> {
-        // Unlock EEPROM, write, relock
-        self.write_register(id, REG_LOCK, &[0])?;
-        let bytes = (correction as i16).to_le_bytes();
-        self.write_register(id, REG_POSITION_CORRECTION, &bytes)?;
-        self.write_register(id, REG_LOCK, &[1])
-    }
-
-    /// Reset POSITION_CORRECTION to 0 on a servo. Use this to undo a previous
-    /// recenter operation and restore the encoder's natural zero point.
-    pub fn reset_position_correction(&mut self, id: u8) -> Result<(), String> {
-        // Disable torque first so the servo doesn't lurch to its old goal
-        let _ = self.set_torque_enable(id, false);
-        std::thread::sleep(std::time::Duration::from_millis(10));
-        self.write_position_correction(id, 0)?;
-        // Read the new actual position and set goal to match so the servo
-        // stays put when torque is re-enabled
-        let pos = self.read_position(id)?;
-        let _ = self.write_position(id, pos);
-        Ok(())
     }
 
     /// Write a value to the servo's center offset register (address 40 -> write 128 for calibration).

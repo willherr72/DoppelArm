@@ -62,7 +62,6 @@ pub fn run() {
             enable_single_turn,
             set_joint_limit,
             get_joint_limits,
-            reset_position_corrections,
             // Calibration
             calibrate_capture,
             compute_calibration,

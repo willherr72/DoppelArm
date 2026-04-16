@@ -6,7 +6,7 @@
   import { availablePorts, leaderConnection, followerConnection } from '$lib/stores/connection';
   import type { ArmConnection } from '$lib/stores/connection';
   import { leaderAngles, followerAngles, leaderJoints, followerJoints, isMirroring } from '$lib/stores/joints';
-  import { listPorts, connectArm, disconnectArm, scanMotors, scanConnected, readAllJoints, diagnosePort, resetPositionCorrections } from '$lib/tauri/commands';
+  import { listPorts, connectArm, disconnectArm, scanMotors, scanConnected, readAllJoints, diagnosePort } from '$lib/tauri/commands';
   import { showError, showStatus } from '$lib/stores/app';
   import type { Writable } from 'svelte/store';
 
@@ -111,27 +111,10 @@
   }
 
   let setupOpen = false;
-  let resettingOffsets = false;
 
   function openSetup() {
     if (!selectedPort) return;
     setupOpen = true;
-  }
-
-  async function resetOffsets() {
-    if (!connection?.connected) return;
-    if (!confirm(`Reset all position offsets on ${role}?\n\nThis clears any prior recenter and disables torque first so the servos won't lurch.`)) {
-      return;
-    }
-    resettingOffsets = true;
-    try {
-      await resetPositionCorrections(role);
-      showStatus(`${role} position offsets reset to 0`);
-    } catch (e) {
-      showError(`Reset failed: ${e}`);
-    } finally {
-      resettingOffsets = false;
-    }
   }
 
   async function scanBus() {
@@ -183,9 +166,6 @@
         <span class="motor-count">{connection.motorIds.length} motors</span>
         <button class="btn-sm" on:click={scanBus} disabled={scanning}>
           {scanning ? '...' : 'Rescan'}
-        </button>
-        <button class="btn-sm" on:click={resetOffsets} disabled={resettingOffsets}>
-          {resettingOffsets ? '...' : 'Reset offsets'}
         </button>
         <button class="btn-sm" on:click={disconnect}>Disconnect</button>
       {:else}

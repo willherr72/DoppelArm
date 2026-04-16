@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { save as saveDialog, open as openDialog } from '@tauri-apps/plugin-dialog';
   import { isMirroring } from '$lib/stores/joints';
   import { isRecording, isPlaying, currentRecording, recordingName } from '$lib/stores/recording';
   import { leaderConnection, followerConnection, bothConnected, availablePorts } from '$lib/stores/connection';
@@ -12,9 +13,12 @@
   import { leaderJoints, followerJoints } from '$lib/stores/joints';
   import { showError, showStatus } from '$lib/stores/app';
   import CalibrationModal from './calibration/CalibrationModal.svelte';
+  import CameraModal from './CameraModal.svelte';
 
   let calibrationOpen = false;
   let calibrationDone = false;
+  let cameraOpen = false;
+  let savingOrLoading = false;
 
   async function refreshPorts() {
     try {
@@ -69,6 +73,50 @@
     }
   }
 
+  async function saveCurrentRecording() {
+    if (!$currentRecording || savingOrLoading) return;
+    savingOrLoading = true;
+    try {
+      const defaultName = `${$currentRecording.name || 'recording'}.json`;
+      const path = await saveDialog({
+        title: 'Save recording',
+        defaultPath: defaultName,
+        filters: [{ name: 'Recording', extensions: ['json'] }],
+      });
+      if (!path) return;
+      await saveRecording($currentRecording, path);
+      const fileName = path.split(/[\\/]/).pop() ?? path;
+      showStatus(`Saved ${fileName}`);
+    } catch (e) {
+      showError(`Save failed: ${e}`);
+    } finally {
+      savingOrLoading = false;
+    }
+  }
+
+  async function loadRecordingFromFile() {
+    if (savingOrLoading || $isPlaying || $isRecording) return;
+    savingOrLoading = true;
+    try {
+      const result = await openDialog({
+        title: 'Load recording',
+        multiple: false,
+        filters: [{ name: 'Recording', extensions: ['json'] }],
+      });
+      const path = Array.isArray(result) ? result[0] : result;
+      if (!path) return;
+      const rec = await loadRecording(path);
+      currentRecording.set(rec);
+      recordingName.set(rec.name);
+      const seconds = (rec.duration_ms / 1000).toFixed(1);
+      showStatus(`Loaded ${rec.name} — ${rec.frames.length} frames / ${seconds}s`);
+    } catch (e) {
+      showError(`Load failed: ${e}`);
+    } finally {
+      savingOrLoading = false;
+    }
+  }
+
   function openCalibration() {
     calibrationOpen = true;
   }
@@ -77,6 +125,7 @@
 </script>
 
 <CalibrationModal bind:open={calibrationOpen} on:saved={() => (calibrationDone = true)} />
+<CameraModal bind:open={cameraOpen} />
 
 <header class="toolbar">
   <div class="left">
@@ -123,10 +172,33 @@
         class:active={$isPlaying}
         on:click={togglePlayback}
         disabled={!$currentRecording && !$isPlaying}
+        title={$currentRecording
+          ? `${$currentRecording.name} — ${$currentRecording.frames.length} frames`
+          : 'No recording loaded'}
       >
         {$isPlaying ? 'Stop' : 'Play'}
       </button>
+      <button
+        class="tool-btn"
+        on:click={saveCurrentRecording}
+        disabled={!$currentRecording || $isRecording || savingOrLoading}
+      >
+        Save
+      </button>
+      <button
+        class="tool-btn"
+        on:click={loadRecordingFromFile}
+        disabled={$isRecording || $isPlaying || savingOrLoading}
+      >
+        Load
+      </button>
     </div>
+
+    <div class="separator"></div>
+
+    <button class="tool-btn" on:click={() => (cameraOpen = true)}>
+      Camera
+    </button>
   </div>
 
   <div class="right">
