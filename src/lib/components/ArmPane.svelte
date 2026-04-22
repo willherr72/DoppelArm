@@ -46,7 +46,7 @@
       } finally {
         pollBusy = false;
       }
-    }, 250); // 4Hz polling, skips if previous poll still running
+    }, 33); // ~30Hz polling, skips if previous poll still running
   }
 
   function stopPolling() {

@@ -1,4 +1,6 @@
 import { writable, derived } from 'svelte/store';
+import { calibrationState } from './calibration';
+import { computeVisualAngles } from '$lib/utils/visual-config';
 
 const NUM_JOINTS = 6;
 const CENTER = 2048;
@@ -47,12 +49,17 @@ export function rawToDegrees(raw: number): number {
   return (raw / 4095) * 360;
 }
 
-/** Derived store: leader joint angles in radians for 3D visualization */
-export const leaderAngles = derived(leaderJoints, ($lj) =>
-  $lj.positions.map(rawToRadians)
+/**
+ * 3D-ready joint angles. Computed against the per-arm calibration
+ * reference so that "at rest" the model sits in the configured home
+ * pose and motion away from rest tracks the real arm one-to-one.
+ */
+export const leaderAngles = derived(
+  [leaderJoints, calibrationState],
+  ([$lj, $cal]) => computeVisualAngles($lj.positions, $cal.leader_reference),
 );
 
-/** Derived store: follower joint angles in radians for 3D visualization */
-export const followerAngles = derived(followerJoints, ($fj) =>
-  $fj.positions.map(rawToRadians)
+export const followerAngles = derived(
+  [followerJoints, calibrationState],
+  ([$fj, $cal]) => computeVisualAngles($fj.positions, $cal.follower_reference),
 );

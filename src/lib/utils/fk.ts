@@ -1,5 +1,5 @@
-import { Matrix4, Vector3, Euler } from 'three';
-import { LINKS, CENTER_OFFSET } from './arm-config';
+import { Matrix4, Vector3 } from 'three';
+import { LINKS } from './arm-config';
 
 /**
  * Compute the transform matrix for each joint given joint angles in radians.
@@ -20,7 +20,7 @@ export function computeJointPositions(angles: number[]): Vector3[] {
   mat.identity();
 
   // Adjust angles relative to center position
-  const a = angles.map((r) => r - CENTER_OFFSET);
+  const a = angles;
 
   // Base position
   positions.push(new Vector3(0, 0, 0));
@@ -68,7 +68,7 @@ export function getEndEffectorPosition(angles: number[]): Vector3 {
  * given the current set of joint angles.
  */
 export function getJointWorldAxis(angles: number[], jointIndex: number): Vector3 {
-  const a = angles.map((r) => r - CENTER_OFFSET);
+  const a = angles;
   const mat = new Matrix4();
   mat.identity();
 

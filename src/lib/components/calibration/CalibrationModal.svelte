@@ -12,6 +12,7 @@
   } from '$lib/tauri/commands';
   import type { CalibrationState } from '$lib/tauri/commands';
   import { showError, showStatus } from '$lib/stores/app';
+  import { refreshCalibrationState } from '$lib/stores/calibration';
 
   export let open = false;
 
@@ -89,6 +90,7 @@
       await restoreInitialSession();
       showStatus('Discarded draft calibration changes');
     }
+    await refreshCalibrationState();
     open = false;
     dispatch('close');
   }
@@ -162,6 +164,7 @@
       hasDraftChanges = false;
       showStatus('Calibration saved as default');
       dispatch('saved');
+      await refreshCalibrationState();
       open = false;
       dispatch('close');
     } catch (e) {
@@ -178,6 +181,7 @@
       hasDraftChanges = false;
       showStatus('Calibration applied for this session');
       dispatch('saved');
+      await refreshCalibrationState();
       open = false;
       dispatch('close');
     } catch (e) {

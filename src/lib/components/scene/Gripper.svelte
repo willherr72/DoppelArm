@@ -1,12 +1,11 @@
 <script lang="ts">
   import { T } from '@threlte/core';
 
-  /** Gripper angle in radians. Controls how open the gripper is. */
+  /** Normalized open amount: 0 = closed, 1 = fully open. */
   export let angle: number = 0;
   export let color: string = '#888888';
 
-  // Map angle to gripper opening (0 = closed, 1 = open)
-  $: openAmount = Math.min(1, Math.max(0, (angle - Math.PI * 0.68) / (Math.PI * 0.64)));
+  $: openAmount = Math.min(1, Math.max(0, angle));
   $: spread = openAmount * 0.025; // max spread 25mm per side
 </script>
 

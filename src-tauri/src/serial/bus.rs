@@ -10,6 +10,10 @@ use serde::Serialize;
 /// RX: [0xFF, 0xFF, ID, LENGTH, ERROR, PARAMS..., CHECKSUM]
 pub struct ServoBus {
     port: Box<dyn serialport::SerialPort>,
+    /// Auto-detected on first use: true = firmware responds to INST_SYNC_READ
+    /// (0x82), false = firmware doesn't, None = not yet probed. We try the
+    /// fast path on first call and stick with whichever path works.
+    sync_read_supported: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -61,7 +65,7 @@ impl ServoBus {
             .open()
             .map_err(|e| format!("Failed to open serial port {}: {}", port_name, e))?;
 
-        Ok(Self { port })
+        Ok(Self { port, sync_read_supported: None })
     }
 
     /// Scan for servo IDs on the bus by pinging each ID in range.
@@ -133,13 +137,42 @@ impl ServoBus {
         Ok(i16::from_le_bytes([data[0], data[1]]) as i32)
     }
 
-    /// Read positions of multiple servos.
-    /// Uses individual reads for maximum compatibility with STS3215 firmware.
+    /// Read positions of multiple servos. Tries the Feetech sync_read
+    /// instruction (0x82) first, which collapses N round-trips into one;
+    /// falls back to per-servo reads on any failure and remembers the
+    /// outcome so we don't retry the fast path forever on incompatible firmware.
     pub fn sync_read_positions(&mut self, ids: &[u8]) -> Result<Vec<i32>, String> {
+        if self.sync_read_supported != Some(false) {
+            match self.sync_read(ids, REG_PRESENT_POSITION, 2) {
+                Ok(data) if data.len() == ids.len() * 2 => {
+                    if self.sync_read_supported.is_none() {
+                        log::info!("sync_read (0x82) supported on this bus");
+                        self.sync_read_supported = Some(true);
+                    }
+                    let mut positions = Vec::with_capacity(ids.len());
+                    for chunk in data.chunks_exact(2) {
+                        positions.push(i16::from_le_bytes([chunk[0], chunk[1]]) as i32);
+                    }
+                    return Ok(positions);
+                }
+                Ok(_) => {
+                    if self.sync_read_supported.is_none() {
+                        log::warn!("sync_read returned unexpected length, falling back to sequential reads");
+                        self.sync_read_supported = Some(false);
+                    }
+                }
+                Err(e) => {
+                    if self.sync_read_supported.is_none() {
+                        log::warn!("sync_read unsupported ({}), falling back to sequential reads", e);
+                        self.sync_read_supported = Some(false);
+                    }
+                }
+            }
+        }
+
         let mut positions = Vec::with_capacity(ids.len());
         for &id in ids {
-            let pos = self.read_position(id)?;
-            positions.push(pos);
+            positions.push(self.read_position(id)?);
         }
         Ok(positions)
     }
@@ -515,13 +548,112 @@ impl ServoBus {
         Ok(())
     }
 
+    /// Real Feetech sync_read (instruction 0x82). One broadcast request,
+    /// each addressed servo replies in turn with a normal status packet.
+    /// Returns the concatenated data bytes in the order of `ids`. Errors
+    /// if any servo doesn't reply or returns a checksum/error.
     fn sync_read(&mut self, ids: &[u8], address: u8, length: u8) -> Result<Vec<u8>, String> {
-        // Use individual reads for compatibility
-        let mut all_data = Vec::new();
-        for &id in ids {
-            let data = self.read_register(id, address, length)?;
-            all_data.extend_from_slice(&data);
+        use std::io::Read;
+        use serialport::ClearBuffer;
+
+        if ids.is_empty() {
+            return Ok(Vec::new());
         }
+
+        self.flush_input();
+
+        // Param block: [address, length, id1, id2, ...]
+        let mut params = Vec::with_capacity(2 + ids.len());
+        params.push(address);
+        params.push(length);
+        params.extend_from_slice(ids);
+        let packet = self.build_packet(BROADCAST_ID, INST_SYNC_READ, &params);
+
+        self.port
+            .write_all(&packet)
+            .map_err(|e| format!("Write failed: {}", e))?;
+        self.port
+            .flush()
+            .map_err(|e| format!("Flush failed: {}", e))?;
+
+        // Each response: FF FF [id] [length=2+data_len] [error] [data...] [checksum]
+        // = 6 + length bytes per servo.
+        let per_servo = 6 + length as usize;
+        let expected = per_servo * ids.len();
+        let mut buf = vec![0u8; expected + 32];
+        let mut total = 0;
+        let deadline = std::time::Instant::now() + std::time::Duration::from_millis(50);
+
+        while total < expected && std::time::Instant::now() < deadline {
+            match self.port.read(&mut buf[total..]) {
+                Ok(0) => break,
+                Ok(n) => total += n,
+                Err(ref e) if e.kind() == std::io::ErrorKind::TimedOut => {
+                    if total >= expected { break; }
+                    continue;
+                }
+                Err(e) => return Err(format!("Read failed: {}", e)),
+            }
+        }
+
+        if total == 0 {
+            // Clear any straggler bytes so the next call starts fresh
+            let _ = self.port.clear(ClearBuffer::Input);
+            return Err("no response".to_string());
+        }
+
+        // Extract each servo's data in request order. Servos respond in the
+        // order they appear in the params list, but we scan tolerantly in
+        // case bytes were dropped — match by ID.
+        let mut all_data = Vec::with_capacity(ids.len() * length as usize);
+        let mut cursor = 0usize;
+
+        for &id in ids {
+            let mut found = false;
+            let mut i = cursor;
+            while i + per_servo <= total {
+                // Look for FF FF [id] header
+                if buf[i] == 0xFF && buf[i + 1] == 0xFF && buf[i + 2] == id {
+                    let pkt_len = buf[i + 3] as usize;
+                    if pkt_len < 2 || pkt_len > 64 {
+                        i += 1;
+                        continue;
+                    }
+                    let packet_end = i + 4 + pkt_len;
+                    if packet_end > total { break; }
+
+                    // Verify checksum: ~(id + len + error + data...) & 0xFF
+                    let mut check = vec![buf[i + 2], buf[i + 3]];
+                    check.extend_from_slice(&buf[i + 4..packet_end - 1]);
+                    let expected_cs = self.calculate_checksum(&check);
+                    if buf[packet_end - 1] != expected_cs {
+                        i += 1;
+                        continue;
+                    }
+
+                    let error = buf[i + 4];
+                    if error != 0 {
+                        return Err(format!("Servo error (id={}): 0x{:02X}", id, error));
+                    }
+
+                    let data_start = i + 5;
+                    let data_end = packet_end - 1;
+                    if data_end - data_start != length as usize {
+                        i += 1;
+                        continue;
+                    }
+                    all_data.extend_from_slice(&buf[data_start..data_end]);
+                    cursor = packet_end;
+                    found = true;
+                    break;
+                }
+                i += 1;
+            }
+            if !found {
+                return Err(format!("no response from servo {}", id));
+            }
+        }
+
         Ok(all_data)
     }
 

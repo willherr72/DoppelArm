@@ -1,5 +1,11 @@
 <script lang="ts">
   import '../app.css';
+  import { onMount } from 'svelte';
+  import { refreshCalibrationState } from '$lib/stores/calibration';
+
+  onMount(() => {
+    void refreshCalibrationState();
+  });
 </script>
 
 <div class="app-layout">
