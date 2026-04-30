@@ -125,15 +125,16 @@ pub fn configure_motor(
 }
 
 /// Try to find a motor on the bus using common baud rates.
+/// Scans IDs 1-10 at each baud; returns the first responding (id, baud).
 #[tauri::command]
 pub fn auto_detect_motor(port: String) -> Result<(u8, u32), String> {
     let baud_rates = [1_000_000, 500_000, 250_000, 115_200, 38_400];
 
     for &baud in &baud_rates {
         if let Ok(mut bus) = ServoBus::new(&port, baud) {
-            // Try pinging ID 1 (factory default)
-            if bus.ping(1).is_ok() {
-                return Ok((1, baud));
+            let found = bus.scan(1..=10);
+            if let Some(&id) = found.first() {
+                return Ok((id, baud));
             }
         }
     }

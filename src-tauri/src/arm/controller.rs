@@ -74,19 +74,27 @@ impl ArmController {
         let raw = self.read_raw_positions()?;
         let mut unwrapped = [0i32; NUM_JOINTS];
         for i in 0..NUM_JOINTS {
-            if let Some(prev) = self.last_raw[i] {
-                let delta = raw[i] - prev;
-                // If delta is more than half a turn, we wrapped.
-                // delta > 2048: wrapped backward (e.g. went from 5 to 4090)
-                // delta < -2048: wrapped forward (e.g. went from 4090 to 5)
-                if delta > 2048 {
-                    self.wrap_count[i] -= 1;
-                } else if delta < -2048 {
-                    self.wrap_count[i] += 1;
+            // Only joints that can physically rotate continuously accumulate
+            // wrap counts. For joints with mechanical limits (shoulder_pan,
+            // shoulder_lift, elbow_flex, gripper) a delta > 2048 between
+            // reads is noise / a manual jolt during detorque, NOT a wrap —
+            // counting it would permanently offset future reads by ±4096.
+            if self.joint_wraps[i] {
+                if let Some(prev) = self.last_raw[i] {
+                    let delta = raw[i] - prev;
+                    if delta > 2048 {
+                        self.wrap_count[i] -= 1;
+                    } else if delta < -2048 {
+                        self.wrap_count[i] += 1;
+                    }
                 }
+                self.last_raw[i] = Some(raw[i]);
+                unwrapped[i] = raw[i] + self.wrap_count[i] * 4096;
+            } else {
+                self.last_raw[i] = Some(raw[i]);
+                self.wrap_count[i] = 0;
+                unwrapped[i] = raw[i];
             }
-            self.last_raw[i] = Some(raw[i]);
-            unwrapped[i] = raw[i] + self.wrap_count[i] * 4096;
         }
         self.last_positions = unwrapped;
         Ok(unwrapped)
@@ -172,8 +180,12 @@ impl ArmController {
     }
 
     /// Enable torque on all joints (follower mode - servos hold position).
+    /// Also resets the software unwrap state, since manual movement during
+    /// the previous detorqued period may have invalidated it.
     pub fn enable_torque(&mut self) -> Result<(), String> {
         let ids: Vec<u8> = self.joint_ids.to_vec();
+        self.last_raw = [None; NUM_JOINTS];
+        self.wrap_count = [0; NUM_JOINTS];
         self.bus.sync_set_torque(&ids, true)
     }
 
