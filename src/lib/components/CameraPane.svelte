@@ -142,15 +142,15 @@
    *  shoulder catches up, producing a "fold-in then settle" path instead
    *  of "out and around then down". Endpoint is unchanged; only the path
    *  through joint space is shaped. */
-  let elbowFirstBoost = 5.0;
+  let elbowFirstBoost = 1.0;
   let wristFirstBoost = 1.0;
   /** Raw-count adjustments added to the descent ENDPOINT for the height
    *  joints. Use these to "coil" the arm — e.g. add elbow flex and reduce
    *  shoulder lift to make the arm curl in tightly during descent. The
    *  bias X/Y sliders can compensate for any XY drift these introduce. */
-  let liftExtra = 0;     // signed counts added to shoulder_lift target
-  let elbowExtra = 0;    // signed counts added to elbow_flex target
-  let wristExtra = 0;    // signed counts added to wrist_flex target
+  let liftExtra = -250;  // signed counts added to shoulder_lift target
+  let elbowExtra = 310;  // signed counts added to elbow_flex target
+  let wristExtra = 210;  // signed counts added to wrist_flex target
   /** When on, use live centroid corrections during the descent. Off keeps
    *  the original one-shot behavior (target frozen at stability fire). */
   let liveCorrectDescent = true;
